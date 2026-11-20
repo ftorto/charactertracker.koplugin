@@ -3,7 +3,7 @@
     Track characters and add notes while reading.
 
     Structure:
-    - Characters are stored per-book in a JSON file alongside the book's sidecar.
+    - Characters are stored per-book in a JSON file in the book's sidecar directory.
     - Books can be linked to a "series" to share characters across multiple books.
     - Each character has: name, aliases, notes, relationships, rating, role.
     - Integrates with KOReader's highlight dialog via addToHighlightDialog().
@@ -15,6 +15,7 @@ local CenterContainer = require("ui/widget/container/centercontainer")
 local Screen = require("device").screen
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
+local DocSettings = require("docsettings")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
@@ -362,7 +363,9 @@ function CharacterTracker:getDataFilePath()
         self.data_file = self:getSeriesDir() .. "/" .. safe_name .. ".json"
     else
         local doc_path = self.ui.document.file
-        self.data_file = doc_path .. ".characters.json"
+        local sidecar_dir = DocSettings:getSidecarDir(doc_path)
+        local filename = doc_path:match("[^/]+$") or doc_path
+        self.data_file = sidecar_dir .. "/" .. filename .. ".characters.json"
     end
     return self.data_file
 end
@@ -382,6 +385,12 @@ function CharacterTracker:loadData()
     self.characters = {}
     local path = self:getDataFilePath()
     local f = io.open(path, "r")
+    local series = self:getSeriesName()
+    if not f and (not series or series == "") then
+        local legacy_path = self.ui.document.file .. ".characters.json"
+        f = io.open(legacy_path, "r")
+        if f then path = legacy_path end
+    end
     if f then
         local content = f:read("*all")
         f:close()
