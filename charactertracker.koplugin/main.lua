@@ -50,6 +50,10 @@ local RELATIONSHIP_TYPES = {
     { key = "brother",  label = _("Brother"),  category = "family" },
     { key = "sister",   label = _("Sister"),   category = "family" },
     { key = "spouse",   label = _("Spouse"),   category = "family" },
+    { key = "family",   label = _("Family"),   category = "family" },
+    -- Location
+    { key = "located",     label = _("Located"),     category = "location" },
+
     -- Social
     { key = "ally",     label = _("Ally"),     category = "social" },
     { key = "enemy",    label = _("Enemy"),    category = "social" },
@@ -363,6 +367,17 @@ function CharacterTracker:getDataFilePath()
     return self.data_file
 end
 
+function CharacterTracker:sortCharacters()
+    table.sort(self.characters, function(a, b)
+        local a_name = a.name:lower()
+        local b_name = b.name:lower()
+        if a_name == b_name then
+            return a.name < b.name
+        end
+        return a_name < b_name
+    end)
+end
+
 function CharacterTracker:loadData()
     self.characters = {}
     local path = self:getDataFilePath()
@@ -379,9 +394,11 @@ function CharacterTracker:loadData()
             end
         end
     end
+    self:sortCharacters()
 end
 
 function CharacterTracker:saveData()
+    self:sortCharacters()
     local path = self:getDataFilePath()
     local ok, content = pcall(json.encode, self.characters)
     if ok then
