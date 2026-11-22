@@ -18,7 +18,6 @@ local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
-local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
@@ -37,9 +36,6 @@ local CharacterTracker = WidgetContainer:extend{
     is_doc_only = true,
     characters = nil,
     data_file = nil,
-    char_marks = nil,
-    mark_enabled = false,
-    visible_boxes = nil,
 }
 
 -- Relationship type definitions
@@ -137,33 +133,6 @@ end
 
 function CharacterTracker:onReaderReady()
     self:loadData()
-    -- Load underline preference (default: off)
-    local saved = self.ui.doc_settings:readSetting("character_tracker_underline")
-    if saved ~= nil then
-        self.mark_enabled = saved
-    end
-    -- Register as a view module so paintTo is called each render
-    self.view = self.ui.view
-    self.ui.view:registerViewModule("charactertracker", self)
-    -- Register tap zone to detect taps on character names
-    self.ui:registerTouchZones({
-        {
-            id = "charactertracker_tap",
-            ges = "tap",
-            screen_zone = {
-                ratio_x = 0, ratio_y = 0,
-                ratio_w = 1, ratio_h = 1,
-            },
-            overrides = {
-                "readerhighlight_tap",
-            },
-            handler = function(ges)
-                return self:onTapUnderline(ges)
-            end,
-        },
-    })
-    -- Build marks for existing characters
-    self:rebuildMarks()
     -- Register our button in the highlight dialog
     if self.ui.highlight then
         self.ui.highlight:addToHighlightDialog("charactertracker_assign", function(this)
@@ -182,168 +151,6 @@ end
 
 function CharacterTracker:onCloseDocument()
     self:saveData()
-end
-
-function CharacterTracker:onPageUpdate()
-    self.visible_boxes = {}
-end
-
--- ============================================================
--- NAME UNDERLINE (VIEW MODULE)
--- ============================================================
-
-function CharacterTracker:paintTo(bb, x, y)
-    self.visible_boxes = {}
-    if not self.char_marks or #self.char_marks == 0 then
-        return
-    end
-    local ok, err = pcall(function()
-        if self.ui.rolling then
-            self:_paintToRolling(bb, x, y)
-        elseif self.ui.paging then
-            self:_paintToPaging(bb, x, y)
-        end
-    end)
-    if not ok then
-        logger.warn("CharacterTracker: paintTo error:", err)
-        self.char_marks = {}
-        self.visible_boxes = {}
-    end
-end
-
-function CharacterTracker:_paintToRolling(bb, x, y)
-    local cur_view_top = self.ui.document:getCurrentPos()
-    local cur_view_bottom
-    if self.view.view_mode == "page" and self.ui.document:getVisiblePageCount() > 1 then
-        cur_view_bottom = cur_view_top + 2 * self.ui.dimen.h
-    else
-        cur_view_bottom = cur_view_top + self.ui.dimen.h
-    end
-    for _i, mark in ipairs(self.char_marks) do
-        if mark.start and mark["end"] then
-            local start_pos = self.ui.document:getPosFromXPointer(mark.start)
-            if start_pos and start_pos <= cur_view_bottom then
-                local end_pos = self.ui.document:getPosFromXPointer(mark["end"])
-                if end_pos and end_pos >= cur_view_top then
-                    local boxes = self.ui.document:getScreenBoxesFromPositions(mark.start, mark["end"], true)
-                    if boxes then
-                        for _j, box in ipairs(boxes) do
-                            if box.h ~= 0 then
-                                if self.mark_enabled then
-                                    self.view:drawHighlightRect(bb, x, y, box, "underscore")
-                                end
-                                table.insert(self.visible_boxes, {
-                                    rect = box,
-                                    char_name = mark.char_name,
-                                })
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
-function CharacterTracker:_paintToPaging(bb, x, y)
-    local cur_page = self.ui.document:getCurrentPage()
-    for _i, mark in ipairs(self.char_marks) do
-        if mark.start == cur_page and mark.boxes then
-            for _j, box in ipairs(mark.boxes) do
-                local native_box = self.ui.document:nativeToPageRectTransform(cur_page, box)
-                if native_box then
-                    local screen_rect = self.view:pageToScreenTransform(cur_page, native_box)
-                    if screen_rect then
-                        if self.mark_enabled then
-                            self.view:drawHighlightRect(bb, x, y, screen_rect, "underscore")
-                        end
-                        table.insert(self.visible_boxes, {
-                            rect = screen_rect,
-                            char_name = mark.char_name,
-                        })
-                    end
-                end
-            end
-        end
-    end
-end
-
-function CharacterTracker:rebuildMarks()
-    if not self.ui.document then return end
-    self.char_marks = {}
-    local names = {}
-    for _i, char in ipairs(self.characters) do
-        table.insert(names, { text = char.name, char_name = char.name })
-        if char.aliases then
-            for _j, alias in ipairs(char.aliases) do
-                table.insert(names, { text = alias, char_name = char.name })
-            end
-        end
-    end
-    if #names == 0 then return end
-    local Trapper = require("ui/trapper")
-    local margin = Screen:scaleBySize(8)
-    local info = InfoMessage:new{
-        text = _("Indexing character names…"),
-        face = Font:getFace("smallinfofont", 14),
-        width = math.min(Screen:scaleBySize(260), Screen:getWidth() - 2 * margin),
-        show_icon = false,
-        modal = false,
-        dismissable = false,
-    }
-    local message_size = info.movable[1]:getSize()
-    info.movable:setMovedOffset({
-        x = margin - math.floor((Screen:getWidth() - message_size.w) / 2),
-        y = margin - math.floor((Screen:getHeight() - message_size.h) / 2),
-    })
-    UIManager:show(info)
-    UIManager:forceRePaint()
-    local completed, results = Trapper:dismissableRunInSubprocess(function()
-        local all_marks = {}
-        for _i, name in ipairs(names) do
-            local res = self.ui.document:findAllText(name.text, true, 0, 5000, false)
-            if res then
-                for _j, item in ipairs(res) do
-                    item.char_name = name.char_name
-                    table.insert(all_marks, item)
-                end
-            end
-        end
-        return all_marks
-    end, info)
-    UIManager:close(info)
-    if completed and results then
-        self.char_marks = results
-    end
-    UIManager:setDirty(self.dialog, "ui")
-end
-
-function CharacterTracker:onTapUnderline(ges)
-    if not self.visible_boxes or #self.visible_boxes == 0 then
-        return false
-    end
-    local ok, result = pcall(function()
-        local pos = self.view:screenToPageTransform(ges.pos)
-        if not pos then return false end
-        for _i, vbox in ipairs(self.visible_boxes) do
-            local r = vbox.rect
-            if pos.x >= r.x and pos.y >= r.y
-               and pos.x <= r.x + r.w and pos.y <= r.y + r.h then
-                local char = self:getCharacterByName(vbox.char_name)
-                if char then
-                    self:showCharacterDetail(char)
-                    return true
-                end
-            end
-        end
-        return false
-    end)
-    if not ok then
-        logger.warn("CharacterTracker: tap error:", result)
-        self.visible_boxes = {}
-        return false
-    end
-    return result
 end
 
 -- ============================================================
@@ -569,7 +376,6 @@ function CharacterTracker:addCharacter(name, note, callback)
 
     table.insert(self.characters, character)
     self:saveData()
-    self:rebuildMarks()
 
     UIManager:show(InfoMessage:new{
         text = T(_("Character '%1' added."), name),
@@ -902,9 +708,9 @@ function CharacterTracker:showAddAliasDialog(character)
                         if not character.aliases then
                             character.aliases = {}
                         end
+
                         table.insert(character.aliases, alias)
                         self:saveData()
-                        self:rebuildMarks()
                         UIManager:show(InfoMessage:new{
                             text = T(_("Alias '%1' added."), alias),
                             timeout = 1,
@@ -963,7 +769,6 @@ function CharacterTracker:showEditAliasDialog(character, alias_index)
 
                         character.aliases[alias_index] = alias
                         self:saveData()
-                        self:rebuildMarks()
                         UIManager:show(InfoMessage:new{
                             text = T(_("Alias updated to '%1'."), alias),
                             timeout = 1,
@@ -985,7 +790,6 @@ function CharacterTracker:confirmDeleteAlias(character, alias_index)
         ok_callback = function()
             table.remove(character.aliases, alias_index)
             self:saveData()
-            self:rebuildMarks()
             UIManager:show(InfoMessage:new{
                 text = T(_("Alias '%1' deleted."), alias),
                 timeout = 1,
@@ -1287,7 +1091,6 @@ function CharacterTracker:deleteCharacter(character)
                 end
                 table.remove(self.characters, idx)
                 self:saveData()
-                self:rebuildMarks()
                 UIManager:show(InfoMessage:new{
                     text = T(_("Character '%1' deleted."), character.name),
                     timeout = 2,
@@ -1344,7 +1147,6 @@ function CharacterTracker:showRenameDialog(character, on_done)
 
                         character.name = new_name
                         self:saveData()
-                        self:rebuildMarks()
 
                         UIManager:show(InfoMessage:new{
                             text = T(_("Renamed '%1' → '%2'."), old_name, new_name),
@@ -1686,9 +1488,17 @@ function CharacterTracker:onAssignHighlightToCharacter(selected)
         return
     end
 
-    -- Offer to create a new character using the selection as name
-    local first_word = trimmed:match("^(%S+)") or ""
-    self:showAddCharacterDialog(first_word)
+    if trimmed == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("No text selected."),
+        })
+        return
+    end
+
+    -- Create the character directly, then show its detail page.
+    self:addCharacter(trimmed, nil, function(character)
+        self:showCharacterDetail(character)
+    end)
 end
 
 -- ============================================================
@@ -1802,7 +1612,6 @@ function CharacterTracker:linkToSeries(series_name)
         -- Merge old book characters into series
         local merged = self:mergeCharacters(old_characters)
         self:saveData()
-        self:rebuildMarks()
 
         local msg
         if series_had_characters then
@@ -1815,7 +1624,6 @@ function CharacterTracker:linkToSeries(series_name)
         UIManager:show(InfoMessage:new{ text = msg })
     else
         if series_had_characters then
-            self:rebuildMarks()
             UIManager:show(InfoMessage:new{
                 text = T(_("Linked to series '%1'.\nLoaded %2 shared characters."),
                     series_name, #self.characters),
@@ -1840,7 +1648,6 @@ function CharacterTracker:unlinkFromSeries()
             self:setSeriesName(nil)
             self.characters = {}
             self:saveData()
-            self:rebuildMarks()
             UIManager:show(InfoMessage:new{
                 text = T(_("Unlinked from series '%1'."), series),
                 timeout = 2,
@@ -1889,17 +1696,6 @@ function CharacterTracker:addToMainMenu(menu_items)
                 keep_menu_open = false,
                 callback = function()
                     self:showAddCharacterDialog()
-                end,
-            },
-            {
-                text = _("Underline names in text"),
-                checked_func = function()
-                    return self.mark_enabled
-                end,
-                callback = function()
-                    self.mark_enabled = not self.mark_enabled
-                    self.ui.doc_settings:saveSetting("character_tracker_underline", self.mark_enabled)
-                    UIManager:setDirty(self.dialog, "ui")
                 end,
             },
             {
