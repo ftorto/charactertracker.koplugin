@@ -18,6 +18,7 @@ local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
+local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
@@ -281,7 +282,20 @@ function CharacterTracker:rebuildMarks()
     end
     if #names == 0 then return end
     local Trapper = require("ui/trapper")
-    local info = InfoMessage:new{ text = _("Indexing character names…") }
+    local margin = Screen:scaleBySize(8)
+    local info = InfoMessage:new{
+        text = _("Indexing character names…"),
+        face = Font:getFace("smallinfofont", 14),
+        width = math.min(Screen:scaleBySize(260), Screen:getWidth() - 2 * margin),
+        show_icon = false,
+        modal = false,
+        dismissable = false,
+    }
+    local message_size = info.movable[1]:getSize()
+    info.movable:setMovedOffset({
+        x = margin - math.floor((Screen:getWidth() - message_size.w) / 2),
+        y = margin - math.floor((Screen:getHeight() - message_size.h) / 2),
+    })
     UIManager:show(info)
     UIManager:forceRePaint()
     local completed, results = Trapper:dismissableRunInSubprocess(function()
@@ -365,7 +379,7 @@ function CharacterTracker:getDataFilePath()
         local doc_path = self.ui.document.file
         local sidecar_dir = DocSettings:getSidecarDir(doc_path)
         local filename = doc_path:match("[^/]+$") or doc_path
-        self.data_file = sidecar_dir .. "/" .. filename .. ".characters.json"
+        self.data_file = sidecar_dir .. "/" .. "characters.json"
     end
     return self.data_file
 end
@@ -533,10 +547,9 @@ end
 -- ============================================================
 
 function CharacterTracker:addCharacter(name, note, callback)
-    if self:getCharacterByName(name) then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Character '%1' already exists."), name),
-        })
+    local existing = self:getCharacterByName(name)
+    if existing then
+        self:showCharacterDetail(existing)
         return
     end
 
@@ -1669,10 +1682,7 @@ function CharacterTracker:onAssignHighlightToCharacter(selected)
     local trimmed = selected_text:match("^%s*(.-)%s*$")
     local existing = self:getCharacterByName(trimmed)
     if existing then
-        UIManager:show(InfoMessage:new{
-            text = T(_("'%1' is already a known character."), existing.name),
-            timeout = 2,
-        })
+        self:showCharacterDetail(existing)
         return
     end
 
