@@ -36,6 +36,10 @@ local CharacterTracker = WidgetContainer:extend{
     is_doc_only = true,
     characters = nil,
     data_file = nil,
+    character_lookup = nil,
+    incoming_relationship_lookup = nil,
+    character_list_cache = nil,
+    characters_sorted = false,
 }
 
 -- Relationship type definitions
@@ -64,13 +68,15 @@ local RELATIONSHIP_TYPES = {
     { key = "custom",   label = _("Custom…"),  category = "other" },
 }
 
+local RELATIONSHIP_LABELS = {}
+for _i, relationship in ipairs(RELATIONSHIP_TYPES) do
+    RELATIONSHIP_LABELS[relationship.key] = relationship.label
+end
+
 local function getRelationshipLabel(type_key)
-    for _i, rt in ipairs(RELATIONSHIP_TYPES) do
-        if rt.key == type_key then
-            return rt.label
-        end
+    if type_key and RELATIONSHIP_LABELS[type_key] then
+        return RELATIONSHIP_LABELS[type_key]
     end
-    -- For custom types, the key IS the label
     return type_key or _("Unknown")
 end
 
@@ -85,19 +91,24 @@ local ROLES = {
     { key = "narrator",   label = _("Narrator") },
 }
 
+local ROLE_LABELS = {}
+for _i, role in ipairs(ROLES) do
+    ROLE_LABELS[role.key] = role.label
+end
+
 local function getRoleLabel(role_key)
-    for _i, r in ipairs(ROLES) do
-        if r.key == (role_key or "") then
-            return r.label
-        end
-    end
-    return _("Not set")
+    return ROLE_LABELS[role_key or ""] or _("Not set")
 end
 
 --- Trim leading/trailing whitespace.
 local function trim(s)
     if not s then return "" end
     return (s:gsub("^%s*(.-)%s*$", "%1"))
+end
+
+local function normalizeName(name)
+    if type(name) ~= "string" then return "" end
+    return trim(name):lower()
 end
 
 --- Get plain text from a note (supports legacy table format and current string format).
@@ -120,6 +131,10 @@ function CharacterTracker:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
     self.characters = {}
+    self.character_lookup = {}
+    self.incoming_relationship_lookup = {}
+    self.character_list_cache = nil
+    self.characters_sorted = false
 end
 
 function CharacterTracker:onDispatcherRegisterActions()
@@ -192,18 +207,56 @@ function CharacterTracker:getDataFilePath()
 end
 
 function CharacterTracker:sortCharacters()
+    if self.characters_sorted then return end
     table.sort(self.characters, function(a, b)
-        local a_name = a.name:lower()
-        local b_name = b.name:lower()
+        local a_name = normalizeName(a.name)
+        local b_name = normalizeName(b.name)
         if a_name == b_name then
             return a.name < b.name
         end
         return a_name < b_name
     end)
+    self.characters_sorted = true
+end
+
+function CharacterTracker:rebuildCaches()
+    self.character_lookup = {}
+    self.incoming_relationship_lookup = {}
+
+    for _i, char in ipairs(self.characters) do
+        self.character_lookup[normalizeName(char.name)] = char
+        if char.aliases then
+            for _j, alias in ipairs(char.aliases) do
+                self.character_lookup[normalizeName(alias)] = char
+            end
+        end
+    end
+
+    for _i, char in ipairs(self.characters) do
+        if char.relationships then
+            for _j, rel in ipairs(char.relationships) do
+                local target = normalizeName(rel.target)
+                if target ~= "" and target ~= normalizeName(char.name) then
+                    local incoming = self.incoming_relationship_lookup[target]
+                    if not incoming then
+                        incoming = {}
+                        self.incoming_relationship_lookup[target] = incoming
+                    end
+                    table.insert(incoming, {
+                        source = char.name,
+                        type = rel.type,
+                    })
+                end
+            end
+        end
+    end
+
+    self.character_list_cache = nil
 end
 
 function CharacterTracker:loadData()
     self.characters = {}
+    self.characters_sorted = false
     local path = self:getDataFilePath()
     local f = io.open(path, "r")
     local series = self:getSeriesName()
@@ -225,10 +278,12 @@ function CharacterTracker:loadData()
         end
     end
     self:sortCharacters()
+    self:rebuildCaches()
 end
 
 function CharacterTracker:saveData()
     self:sortCharacters()
+    self:rebuildCaches()
     local path = self:getDataFilePath()
     local ok, content = pcall(json.encode, self.characters)
     if ok then
@@ -263,42 +318,47 @@ function CharacterTracker:mergeCharacters(source_chars)
             -- Merge aliases
             if src.aliases then
                 if not existing.aliases then existing.aliases = {} end
+                local existing_aliases = {}
+                for _j, existing_alias in ipairs(existing.aliases) do
+                    existing_aliases[normalizeName(existing_alias)] = true
+                end
                 for _j, alias in ipairs(src.aliases) do
-                    local found = false
-                    for _k, ea in ipairs(existing.aliases) do
-                        if ea:lower() == alias:lower() then
-                            found = true
-                            break
-                        end
-                    end
-                    if not found then
+                    local alias_key = normalizeName(alias)
+                    if alias_key ~= "" and not existing_aliases[alias_key] then
                         table.insert(existing.aliases, alias)
+                        existing_aliases[alias_key] = true
                     end
                 end
             end
             -- Merge notes (avoid exact duplicates)
             if src.notes then
                 if not existing.notes then existing.notes = {} end
+                local existing_notes = {}
+                for _j, existing_note in ipairs(existing.notes) do
+                    existing_notes[getNoteText(existing_note)] = true
+                end
                 for _j, note in ipairs(src.notes) do
                     local note_text = getNoteText(note)
-                    local found = false
-                    for _k, en in ipairs(existing.notes) do
-                        if getNoteText(en) == note_text then
-                            found = true
-                            break
-                        end
-                    end
-                    if not found then
+                    if note_text ~= "" and not existing_notes[note_text] then
                         table.insert(existing.notes, note)
+                        existing_notes[note_text] = true
                     end
                 end
             end
         else
             -- New character, add it
             table.insert(self.characters, src)
+            self.character_lookup = self.character_lookup or {}
+            self.character_lookup[normalizeName(src.name)] = src
+            if src.aliases then
+                for _j, alias in ipairs(src.aliases) do
+                    self.character_lookup[normalizeName(alias)] = src
+                end
+            end
             merged_count = merged_count + 1
         end
     end
+    self.characters_sorted = false
     return merged_count
 end
 
@@ -322,26 +382,13 @@ function CharacterTracker:getCurrentChapter()
 end
 
 function CharacterTracker:getCharacterByName(name)
-    local name_lower = name:lower()
-    for _i, char in ipairs(self.characters) do
-        if char.name:lower() == name_lower then
-            return char
-        end
-        -- Check aliases
-        if char.aliases then
-            for _i, alias in ipairs(char.aliases) do
-                if alias:lower() == name_lower then
-                    return char
-                end
-            end
-        end
-    end
-    return nil
+    if not self.character_lookup then return nil end
+    return self.character_lookup[normalizeName(name)]
 end
 
 function CharacterTracker:getCharacterIndex(character)
     for i, char in ipairs(self.characters) do
-        if char.name == character.name then
+        if char == character then
             return i
         end
     end
@@ -375,6 +422,7 @@ function CharacterTracker:addCharacter(name, note, callback)
     end
 
     table.insert(self.characters, character)
+    self.characters_sorted = false
     self:saveData()
 
     UIManager:show(InfoMessage:new{
@@ -644,20 +692,10 @@ end
 
 --- Check if an alias is already used by another character
 function CharacterTracker:isAliasOrNameTaken(text, exclude_character)
-    local text_lower = text:lower()
-    for _i, char in ipairs(self.characters) do
-        if char ~= exclude_character then
-            if char.name:lower() == text_lower then
-                return char.name
-            end
-            if char.aliases then
-                for _j, alias in ipairs(char.aliases) do
-                    if alias:lower() == text_lower then
-                        return char.name
-                    end
-                end
-            end
-        end
+    local taken_by = self.character_lookup and
+        self.character_lookup[normalizeName(text)]
+    if taken_by and taken_by ~= exclude_character then
+        return taken_by.name
     end
     return nil
 end
@@ -683,6 +721,18 @@ function CharacterTracker:showAddAliasDialog(character)
                         local alias = dialog:getInputText():match("^%s*(.-)%s*$")
                         UIManager:close(dialog)
                         if alias == "" then return end
+                        if normalizeName(alias) == normalizeName(character.name) then
+                            UIManager:show(InfoMessage:new{
+                                text = _("Alias cannot be the character name."),
+                            })
+                            return
+                        end
+                        if normalizeName(alias) == normalizeName(character.name) then
+                            UIManager:show(InfoMessage:new{
+                                text = _("Alias cannot be the character name."),
+                            })
+                            return
+                        end
 
                         -- Check for duplicates
                         local taken_by = self:isAliasOrNameTaken(alias, character)
@@ -696,7 +746,7 @@ function CharacterTracker:showAddAliasDialog(character)
                         -- Check if same alias already exists on this character
                         if character.aliases then
                             for _i, existing in ipairs(character.aliases) do
-                                if existing:lower() == alias:lower() then
+                                if normalizeName(existing) == normalizeName(alias) then
                                     UIManager:show(InfoMessage:new{
                                         text = T(_("Alias '%1' already exists."), alias),
                                     })
@@ -748,7 +798,7 @@ function CharacterTracker:showEditAliasDialog(character, alias_index)
                         if alias == "" then return end
 
                         -- Check for duplicates (exclude current value)
-                        if alias:lower() ~= old_alias:lower() then
+                        if normalizeName(alias) ~= normalizeName(old_alias) then
                             local taken_by = self:isAliasOrNameTaken(alias, character)
                             if taken_by then
                                 UIManager:show(InfoMessage:new{
@@ -758,7 +808,7 @@ function CharacterTracker:showEditAliasDialog(character, alias_index)
                             end
                             -- Check within same character
                             for i, existing in ipairs(character.aliases) do
-                                if i ~= alias_index and existing:lower() == alias:lower() then
+                                if i ~= alias_index and normalizeName(existing) == normalizeName(alias) then
                                     UIManager:show(InfoMessage:new{
                                         text = T(_("Alias '%1' already exists."), alias),
                                     })
@@ -1012,8 +1062,9 @@ function CharacterTracker:addRelationship(character, target_name, rel_type)
     end
 
     -- Check for duplicate
+    local target_key = normalizeName(target_name)
     for _i, rel in ipairs(character.relationships) do
-        if rel.target:lower() == target_name:lower() and rel.type == rel_type then
+        if normalizeName(rel.target) == target_key and rel.type == rel_type then
             UIManager:show(InfoMessage:new{
                 text = T(_("Relationship already exists.")),
             })
@@ -1054,21 +1105,8 @@ end
 
 --- Get all relationships pointing TO a character (from other characters)
 function CharacterTracker:getIncomingRelationships(character)
-    local incoming = {}
-    local name_lower = character.name:lower()
-    for _i, char in ipairs(self.characters) do
-        if char.name ~= character.name and char.relationships then
-            for _j, rel in ipairs(char.relationships) do
-                if rel.target:lower() == name_lower then
-                    table.insert(incoming, {
-                        source = char.name,
-                        type = rel.type,
-                    })
-                end
-            end
-        end
-    end
-    return incoming
+    if not self.incoming_relationship_lookup then return {} end
+    return self.incoming_relationship_lookup[normalizeName(character.name)] or {}
 end
 
 function CharacterTracker:deleteCharacter(character)
@@ -1079,17 +1117,18 @@ function CharacterTracker:deleteCharacter(character)
             local idx = self:getCharacterIndex(character)
             if idx then
                 -- Also clean up relationships pointing to this character
-                local char_name_lower = character.name:lower()
+                local char_name_lower = normalizeName(character.name)
                 for _i, char in ipairs(self.characters) do
                     if char.relationships then
                         for j = #char.relationships, 1, -1 do
-                            if char.relationships[j].target:lower() == char_name_lower then
+                            if normalizeName(char.relationships[j].target) == char_name_lower then
                                 table.remove(char.relationships, j)
                             end
                         end
                     end
                 end
                 table.remove(self.characters, idx)
+                self.characters_sorted = false
                 self:saveData()
                 UIManager:show(InfoMessage:new{
                     text = T(_("Character '%1' deleted."), character.name),
@@ -1130,15 +1169,26 @@ function CharacterTracker:showRenameDialog(character, on_done)
                             })
                             return
                         end
+                        local new_name_key = normalizeName(new_name)
+                        if character.aliases then
+                            for _i, alias in ipairs(character.aliases) do
+                                if normalizeName(alias) == new_name_key then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("'%1' is already used by '%2'."), new_name, character.name),
+                                    })
+                                    return
+                                end
+                            end
+                        end
 
                         local old_name = character.name
-                        local old_name_lower = old_name:lower()
+                        local old_name_lower = normalizeName(old_name)
 
                         -- Update relationships in other characters that point to this one
                         for _i, char in ipairs(self.characters) do
                             if char.relationships then
                                 for _j, rel in ipairs(char.relationships) do
-                                    if rel.target:lower() == old_name_lower then
+                                    if normalizeName(rel.target) == old_name_lower then
                                         rel.target = new_name
                                     end
                                 end
@@ -1146,6 +1196,7 @@ function CharacterTracker:showRenameDialog(character, on_done)
                         end
 
                         character.name = new_name
+                        self.characters_sorted = false
                         self:saveData()
 
                         UIManager:show(InfoMessage:new{
@@ -1394,51 +1445,55 @@ function CharacterTracker:showCharacterList()
         return
     end
 
-    local item_table = {}
-    for _i, char in ipairs(self.characters) do
-        local badges = {}
+    local item_table = self.character_list_cache
+    if not item_table then
+        item_table = {}
+        for _i, char in ipairs(self.characters) do
+            local badges = {}
         -- Stars
-        local rating = char.rating or 0
-        if rating > 0 then
-            table.insert(badges, ("★"):rep(rating))
-        end
+            local rating = char.rating or 0
+            if rating > 0 then
+                table.insert(badges, ("★"):rep(rating))
+            end
         -- Role
-        local role = char.role or ""
-        if role ~= "" then
-            table.insert(badges, getRoleLabel(role))
-        end
+            local role = char.role or ""
+            if role ~= "" then
+                table.insert(badges, getRoleLabel(role))
+            end
         -- Aliases
-        if char.aliases and #char.aliases > 0 then
-            table.insert(badges, T(_("%1 aliases"), #char.aliases))
-        end
+            if char.aliases and #char.aliases > 0 then
+                table.insert(badges, T(_("%1 aliases"), #char.aliases))
+            end
         -- Relationships
-        local rel_count = (char.relationships and #char.relationships or 0)
-                        + #self:getIncomingRelationships(char)
-        if rel_count > 0 then
-            table.insert(badges, T(_("%1 relations"), rel_count))
-        end
+            local rel_count = (char.relationships and #char.relationships or 0)
+                            + #self:getIncomingRelationships(char)
+            if rel_count > 0 then
+                table.insert(badges, T(_("%1 relations"), rel_count))
+            end
         -- Counts
-        if char.notes and #char.notes > 0 then
-            table.insert(badges, T(_("%1 notes"), #char.notes))
-        end
-        local info = ""
-        if #badges > 0 then
-            info = "  " .. table.concat(badges, " · ")
-        end
+            if char.notes and #char.notes > 0 then
+                table.insert(badges, T(_("%1 notes"), #char.notes))
+            end
+            local info = ""
+            if #badges > 0 then
+                info = "  " .. table.concat(badges, " · ")
+            end
 
         -- Show aliases below the name
-        local display_name = char.name
-        if char.aliases and #char.aliases > 0 then
-            display_name = char.name .. "\n    aka: " .. table.concat(char.aliases, ", ")
-        end
+            local display_name = char.name
+            if char.aliases and #char.aliases > 0 then
+                display_name = char.name .. "\n    aka: " .. table.concat(char.aliases, ", ")
+            end
 
-        table.insert(item_table, {
-            text = display_name .. info,
-            character = char,
-            callback = function()
-                self:showCharacterDetail(char)
-            end,
-        })
+            table.insert(item_table, {
+                text = display_name .. info,
+                character = char,
+                callback = function()
+                    self:showCharacterDetail(char)
+                end,
+            })
+        end
+        self.character_list_cache = item_table
     end
 
     local menu_container
@@ -1647,6 +1702,7 @@ function CharacterTracker:unlinkFromSeries()
         ok_callback = function()
             self:setSeriesName(nil)
             self.characters = {}
+            self.characters_sorted = false
             self:saveData()
             UIManager:show(InfoMessage:new{
                 text = T(_("Unlinked from series '%1'."), series),
