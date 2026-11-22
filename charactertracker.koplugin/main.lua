@@ -1302,9 +1302,6 @@ function CharacterTracker:showCharacterDetail(character)
     local text_parts = {}
     local sep = "────────────────"
 
-    -- Header
-    table.insert(text_parts, "━━━ " .. character.name .. " ━━━\n\n")
-
     -- Rating
     table.insert(text_parts, "  " .. _("Rating") .. ":  " .. starsString(character.rating) .. "\n")
 
@@ -1322,9 +1319,8 @@ function CharacterTracker:showCharacterDetail(character)
     local has_rels = #outgoing > 0 or #incoming > 0
 
     if has_rels then
-        table.insert(text_parts, "\n" .. sep .. "\n")
-        table.insert(text_parts, "  " .. _("Relationships") .. "\n")
         table.insert(text_parts, sep .. "\n")
+        table.insert(text_parts, "  " .. _("Relationships") .. "\n")
         for _i, rel in ipairs(outgoing) do
             local label = getRelationshipLabel(rel.type)
             table.insert(text_parts, "  → " .. rel.target .. " (" .. label .. ")\n")
@@ -1337,9 +1333,8 @@ function CharacterTracker:showCharacterDetail(character)
 
     -- Notes (general, not linked to pages)
     if character.notes and #character.notes > 0 then
-        table.insert(text_parts, "\n" .. sep .. "\n")
-        table.insert(text_parts, "  " .. _("Notes") .. " (" .. #character.notes .. ")\n")
         table.insert(text_parts, sep .. "\n")
+        table.insert(text_parts, "  " .. _("Notes") .. " (" .. #character.notes .. ")\n")
         for _i, note in ipairs(character.notes) do
             table.insert(text_parts, "  ◆ " .. getNoteText(note) .. "\n\n")
         end
