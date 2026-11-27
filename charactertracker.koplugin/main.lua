@@ -1,13 +1,13 @@
 --[[
     Character Tracker Plugin for KOReader
-    Track characters and add notes while reading.
+    Track story objects and add notes while reading.
 
     Structure:
     - Characters are stored per-book in a JSON file in the book's sidecar directory.
-    - Books can be linked to a "series" to share characters across multiple books.
-    - Each character has: name, aliases, notes, relationships, rating, role.
+    - Books can be linked to a "series" to share objects across multiple books.
+    - Each object has: type, name, aliases, notes, relationships, rating, role.
     - Integrates with KOReader's highlight dialog via addToHighlightDialog().
-    - Adds a menu entry under Tools for managing characters.
+    - Adds a menu entry under Tools for managing objects.
 ]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
@@ -90,6 +90,51 @@ local function getRelationshipLabel(type_key)
         return RELATIONSHIP_LABELS[type_key]
     end
     return type_key or _("Unknown")
+end
+
+RELATIONSHIP_LABELS.from_location = _("From location")
+RELATIONSHIP_LABELS.belongs_to_faction = _("Belongs to faction")
+RELATIONSHIP_LABELS.inside_location = _("Inside location")
+RELATIONSHIP_LABELS.inside_faction = _("Inside faction")
+
+local ENTITY_TYPES = {
+    { key = "character", label = _("Character"), icon = "👤" },
+    { key = "location", label = _("Location"), icon = "🏠" },
+    { key = "faction", label = _("Faction"), icon = "🛡" },
+}
+
+local ENTITY_LABELS = {}
+local ENTITY_ICONS = {}
+for _i, entity_type in ipairs(ENTITY_TYPES) do
+    ENTITY_LABELS[entity_type.key] = entity_type.label
+    ENTITY_ICONS[entity_type.key] = entity_type.icon
+end
+
+local function getEntityType(entity)
+    return entity.entity_type or "character"
+end
+
+local function getEntityLabel(entity)
+    return ENTITY_LABELS[getEntityType(entity)] or ENTITY_LABELS.character
+end
+
+local function getEntityIcon(entity)
+    return ENTITY_ICONS[getEntityType(entity)] or ENTITY_ICONS.character
+end
+
+local function getEntityLinkType(source, target)
+    local source_type = getEntityType(source)
+    local target_type = getEntityType(target)
+    if source_type == "character" and target_type == "location" then
+        return "from_location"
+    elseif source_type == "character" and target_type == "faction" then
+        return "belongs_to_faction"
+    elseif source_type == "location" and target_type == "location" then
+        return "inside_location"
+    elseif source_type == "faction" and target_type == "faction" then
+        return "inside_faction"
+    end
+    return nil
 end
 
 -- Role definitions
@@ -201,7 +246,7 @@ function CharacterTracker:onDispatcherRegisterActions()
     Dispatcher:registerAction("character_tracker_show", {
         category = "none",
         event = "ShowCharacterList",
-        title = _("Character Tracker: show characters"),
+        title = _("Character Tracker: show objects"),
         reader = true,
     })
 end
@@ -434,7 +479,7 @@ function CharacterTracker:rebuildNameIndex()
     self._name_index_dirty = false
 end
 
---- Resolve the character a relationship points to (id first, legacy name next).
+--- Resolve the object a relationship points to (id first, legacy name next).
 function CharacterTracker:resolveRelationshipTarget(rel)
     if rel.target_id and self.character_by_id then
         local target = self.character_by_id[rel.target_id]
@@ -567,6 +612,10 @@ function CharacterTracker:migrateData()
         if type(char) == "table" then
             if type(char.name) ~= "string" or char.name == "" then
                 char.name = tostring(char.name or "?")
+                changed = true
+            end
+            if type(char.entity_type) ~= "string" or not ENTITY_LABELS[char.entity_type] then
+                char.entity_type = "character"
                 changed = true
             end
             if type(char.id) ~= "string" or char.id == "" or seen_ids[char.id] then
@@ -843,7 +892,10 @@ end
 -- ADD / EDIT / DELETE CHARACTERS
 -- ============================================================
 
-function CharacterTracker:addCharacter(name, note, callback)
+function CharacterTracker:addEntity(name, note, entity_type, callback)
+    if not ENTITY_LABELS[entity_type] then
+        error("Unsupported entity type: " .. tostring(entity_type))
+    end
     local existing = self:getCharacterByName(name)
     if existing then
         self:showCharacterDetail(existing)
@@ -853,6 +905,7 @@ function CharacterTracker:addCharacter(name, note, callback)
     local character = {
         id = self:newId(),
         name = name,
+        entity_type = entity_type,
         aliases = {},
         notes = {},
         relationships = {},
@@ -868,24 +921,36 @@ function CharacterTracker:addCharacter(name, note, callback)
     self.characters[#self.characters + 1] = character
     self.characters_sorted = false
     self._positions = nil
-    self:markDirty("names")
+    self:markDirty("all")
 
     UIManager:show(InfoMessage:new{
-        text = T(_("Character '%1' added."), name),
+        text = T(_("%1 '%2' added."), getEntityLabel(character), name),
         timeout = 2,
     })
 
     if callback then callback(character) end
 end
 
+function CharacterTracker:addCharacter(name, note, callback)
+    self:addEntity(name, note, "character", callback)
+end
+
 function CharacterTracker:showAddCharacterDialog(preselected_name, callback)
+    self:showAddEntityDialog("character", preselected_name, callback)
+end
+
+function CharacterTracker:showAddEntityDialog(entity_type, preselected_name, callback)
+    if not ENTITY_LABELS[entity_type] then
+        error("Unsupported entity type: " .. tostring(entity_type))
+    end
+    local entity_label = getEntityLabel({ entity_type = entity_type })
     local dialog
     dialog = MultiInputDialog:new{
-        title = _("Add new character"),
+        title = T(_("Add new %1"), entity_label:lower()),
         fields = {
             {
                 text = preselected_name or "",
-                hint = _("Character name"),
+                hint = T(_("%1 name"), entity_label),
             },
             {
                 text = "",
@@ -915,7 +980,7 @@ function CharacterTracker:showAddCharacterDialog(preselected_name, callback)
                             })
                             return
                         end
-                        self:addCharacter(name, note, callback)
+                        self:addEntity(name, note, entity_type, callback)
                     end,
                 },
             },
@@ -1201,7 +1266,7 @@ function CharacterTracker:showAddAliasDialog(character, on_done)
                         local alias_key = normalizeName(alias)
                         if alias_key == cachedNameKey(character) then
                             UIManager:show(InfoMessage:new{
-                                text = _("Alias cannot be the character name."),
+                                text = _("Alias cannot be the object's name."),
                             })
                             return
                         end
@@ -1339,10 +1404,13 @@ function CharacterTracker:showRelationshipManager(character, on_close)
             local target_name = self:getRelationshipTargetName(rel)
             local display = target_name .. " (" .. label .. ")"
             if #display > 50 then display = display:sub(1, 47) .. "..." end
+            local target = self:resolveRelationshipTarget(rel)
+            local relationship_index = i
             items[#items + 1] = {
                 text = display,
+                shortcut = target and getEntityIcon(target),
                 callback = function()
-                    self:showRelationshipActionsDialog(character, i, handle.refresh)
+                    self:showRelationshipActionsDialog(character, relationship_index, handle.refresh)
                 end,
             }
         end
@@ -1356,6 +1424,7 @@ function CharacterTracker:showRelationshipManager(character, on_close)
             local relationship_index = rel.relationship_index
             items[#items + 1] = {
                 text = display,
+                shortcut = source and getEntityIcon(source),
                 callback = function()
                     if source and source.relationships
                         and source.relationships[relationship_index] then
@@ -1398,15 +1467,17 @@ function CharacterTracker:showRelationshipActionsDialog(character, rel_index, on
                 end,
             },
         }
-        buttons[#buttons + 1] = {
-            {
-                text = _("Swap characters"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:invertRelationship(character, rel_index, on_done)
-                end,
-            },
-        }
+        if getEntityType(character) == getEntityType(target) then
+            buttons[#buttons + 1] = {
+                {
+                    text = _("Swap entities"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        self:invertRelationship(character, rel_index, on_done)
+                    end,
+                },
+            }
+        end
     end
     buttons[#buttons + 1] = {
         {
@@ -1433,31 +1504,46 @@ function CharacterTracker:showRelationshipActionsDialog(character, rel_index, on
     UIManager:show(dialog)
 end
 
---- Step 1: pick the target character
+--- Step 1: pick a compatible target object
 function CharacterTracker:showAddRelationshipPicker(character, on_done)
     local others = {}
     for _i, char in ipairs(self.characters) do
-        if char ~= character then
+        if char ~= character and (getEntityType(character) == "character"
+            or getEntityType(char) == getEntityType(character)) then
             others[#others + 1] = char
         end
     end
 
     if #others == 0 then
+        local empty_message = _("No compatible objects to link. Add a character, location, or faction first.")
+        if getEntityType(character) == "location" then
+            empty_message = _("No other locations to link. Add a location first.")
+        elseif getEntityType(character) == "faction" then
+            empty_message = _("No other factions to link. Add a faction first.")
+        end
         UIManager:show(InfoMessage:new{
-            text = _("No other characters to link. Add more characters first."),
+            text = empty_message,
         })
         return
     end
 
     local handle
-    handle = self:showMenu(T(_("Add relationship from '%1' to…"), character.name), function()
+    handle = self:showMenu(T(_("Add link from '%1' to…"), character.name), function()
         local items = {}
         for _i, char in ipairs(others) do
+            local target = char
             items[#items + 1] = {
-                text = char.name,
+                text = target.name,
+                mandatory = getEntityLabel(target),
+                shortcut = getEntityIcon(target),
                 callback = function()
                     handle.close()
-                    self:showRelationshipTypePicker(character, char, on_done)
+                    local link_type = getEntityLinkType(character, target)
+                    if link_type then
+                        self:addRelationship(character, target, link_type, on_done)
+                    else
+                        self:showRelationshipTypePicker(character, target, on_done)
+                    end
                 end,
             }
         end
@@ -1474,12 +1560,13 @@ function CharacterTracker:showRelationshipTypePicker(character, target, on_done)
         if rt.key == "custom" then
             -- Custom goes as its own row at the end
         else
+            local relationship_key = rt.key
             table.insert(row, {
                 text = rt.label,
                 callback = function()
                     UIManager:close(self._rel_type_picker)
                     self._rel_type_picker = nil
-                    self:addRelationship(character, target, rt.key, on_done)
+                    self:addRelationship(character, target, relationship_key, on_done)
                 end,
             })
             if #row >= 3 then
@@ -1591,7 +1678,13 @@ function CharacterTracker:invertRelationship(character, rel_index, on_done)
     local target = self:resolveRelationshipTarget(rel)
     if not target then
         UIManager:show(InfoMessage:new{
-            text = _("Cannot invert a relationship with an unknown character."),
+            text = _("Cannot swap a relationship with an unknown object."),
+        })
+        return
+    end
+    if getEntityType(character) ~= getEntityType(target) then
+        UIManager:show(InfoMessage:new{
+            text = _("Only relationships between the same object type can be swapped."),
         })
         return
     end
@@ -1645,7 +1738,7 @@ function CharacterTracker:confirmDeleteRelationship(character, rel_index, on_don
     })
 end
 
---- Get all relationships pointing TO a character (from other characters)
+--- Get all relationships pointing TO an object (from other objects)
 function CharacterTracker:getIncomingRelationships(character)
     self:ensureIndexes()
     return self.incoming_relationship_lookup[character.id] or {}
@@ -1653,7 +1746,8 @@ end
 
 function CharacterTracker:deleteCharacter(character)
     UIManager:show(ConfirmBox:new{
-        text = T(_("Delete character '%1' and all associated data?"), character.name),
+        text = T(_("Delete %1 '%2' and all associated data?"),
+            getEntityLabel(character):lower(), character.name),
         ok_text = _("Delete"),
         ok_callback = function()
             local idx = self:getCharacterIndex(character)
@@ -1678,7 +1772,7 @@ function CharacterTracker:deleteCharacter(character)
                 self._positions = nil
                 self:markDirty("all")
                 UIManager:show(InfoMessage:new{
-                    text = T(_("Character '%1' deleted."), character.name),
+                    text = T(_("%1 '%2' deleted."), getEntityLabel(character), character.name),
                     timeout = 2,
                 })
             end
@@ -1735,7 +1829,7 @@ function CharacterTracker:showRenameDialog(character, on_done)
                         normalized_name_cache[character] = nil
                         self.characters_sorted = false
                         self._positions = nil
-                        self:markDirty("names")
+                        self:markDirty("all")
 
                         UIManager:show(InfoMessage:new{
                             text = T(_("Renamed '%1' → '%2'."), old_name, new_name),
@@ -1863,11 +1957,15 @@ function CharacterTracker:buildCharacterDetailText(character)
             parts[#parts + 1] = sep .. "\n"
             parts[#parts + 1] = "  " .. _("Relationships") .. "\n"
             for _i, rel in ipairs(outgoing) do
-                parts[#parts + 1] = "  → " .. self:getRelationshipTargetName(rel)
+                local target = self:resolveRelationshipTarget(rel)
+                local target_icon = target and (getEntityIcon(target) .. " ") or ""
+                parts[#parts + 1] = "  → " .. target_icon .. self:getRelationshipTargetName(rel)
                     .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
             end
             for _i, rel in ipairs(incoming) do
-                parts[#parts + 1] = "  ← " .. self:getRelationshipSourceName(rel)
+                local source = self.character_by_id[rel.source_id]
+                local source_icon = source and (getEntityIcon(source) .. " ") or ""
+                parts[#parts + 1] = "  ← " .. source_icon .. self:getRelationshipSourceName(rel)
                     .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
             end
         end
@@ -1973,7 +2071,7 @@ function CharacterTracker:showCharacterDetail(character)
     end
 
     viewer = TextViewer:new{
-        title = character.name,
+        title = getEntityIcon(character) .. " " .. character.name,
         text = self:buildCharacterDetailText(character),
         width = math.floor(Device.screen:getWidth() * 0.9),
         height = math.floor(Device.screen:getHeight() * 0.85),
@@ -2039,7 +2137,7 @@ end
 function CharacterTracker:showCharacterList()
     if not self.characters or #self.characters == 0 then
         UIManager:show(InfoMessage:new{
-            text = _("No characters tracked yet.\n\nTo add a character:\n1. Select text in the book\n2. Tap 'Character' in the highlight menu\n3. Or use the Tools menu → Character Tracker → Add character"),
+            text = _("No objects tracked yet.\n\nTo add a character, select text in the book and tap 'Character' in the highlight menu. You can also add characters, locations, and factions from the Tools menu."),
         })
         return
     end
@@ -2049,6 +2147,7 @@ function CharacterTracker:showCharacterList()
     if self._list_dirty or not item_table then
         item_table = {}
         for _i, char in ipairs(self.characters) do
+            local entity = char
             local badges = {}
             -- Stars
             local rating = char.rating or 0
@@ -2089,9 +2188,11 @@ function CharacterTracker:showCharacterList()
 
             item_table[#item_table + 1] = {
                 text = display_name .. info,
-                character = char,
+                mandatory = getEntityLabel(entity),
+                shortcut = getEntityIcon(entity),
+                character = entity,
                 callback = function()
-                    self:showCharacterDetail(char)
+                    self:showCharacterDetail(entity)
                 end,
             }
         end
@@ -2102,7 +2203,7 @@ function CharacterTracker:showCharacterList()
     local menu_container
     local menu
     menu = Menu:new{
-        title = _("Characters"),
+        title = _("Objects"),
         item_table = item_table,
         is_borderless = true,
         is_popout = false,
@@ -2173,7 +2274,7 @@ function CharacterTracker:showLinkSeriesDialog()
             local items = {}
             for _i, s in ipairs(available) do
                 items[#items + 1] = {
-                    text = T(_("%1 (%2 characters)"), s.name, s.count),
+                    text = T(_("%1 (%2 objects)"), s.name, s.count),
                     callback = function()
                         handle.close()
                         self:linkToSeries(s.name)
@@ -2209,7 +2310,7 @@ function CharacterTracker:showDeleteSeriesDialog()
         local items = {}
         for _i, s in ipairs(self:getAvailableSeries()) do
             items[#items + 1] = {
-                text = T(_("%1 (%2 characters)"), s.name, s.count),
+                text = T(_("%1 (%2 objects)"), s.name, s.count),
                 callback = function()
                     self:confirmDeleteSeries(s, handle.refresh)
                 end,
@@ -2282,22 +2383,22 @@ function CharacterTracker:linkToSeries(series_name)
 
         local msg
         if series_had_characters then
-            msg = T(_("Linked to series '%1'.\nMerged characters: %2 new added, %3 already in series."),
+            msg = T(_("Linked to series '%1'.\nMerged objects: %2 new added, %3 already in series."),
                 series_name, merged, #old_characters - merged)
         else
-            msg = T(_("Linked to series '%1'.\n%2 characters moved to shared series."),
+            msg = T(_("Linked to series '%1'.\n%2 objects moved to shared series."),
                 series_name, #self.characters)
         end
         UIManager:show(InfoMessage:new{ text = msg })
     else
         if series_had_characters then
             UIManager:show(InfoMessage:new{
-                text = T(_("Linked to series '%1'.\nLoaded %2 shared characters."),
+                text = T(_("Linked to series '%1'.\nLoaded %2 shared objects."),
                     series_name, #self.characters),
             })
         else
             UIManager:show(InfoMessage:new{
-                text = T(_("Linked to series '%1'.\nNo characters yet — they will be shared across all books in this series."),
+                text = T(_("Linked to series '%1'.\nNo objects yet — they will be shared across all books in this series."),
                     series_name),
             })
         end
@@ -2309,7 +2410,7 @@ function CharacterTracker:unlinkFromSeries()
     if not series or series == "" then return end
 
     UIManager:show(ConfirmBox:new{
-        text = T(_("Unlink this book from series '%1'?\n\nThe shared series characters will remain in the series. This book will go back to its own character list."), series),
+        text = T(_("Unlink this book from series '%1'?\n\nThe shared objects will remain in the series. This book will go back to its own object list."), series),
         ok_text = _("Unlink"),
         ok_callback = function()
             -- Flush pending edits to the series file before switching back.
@@ -2361,7 +2462,7 @@ function CharacterTracker:addToMainMenu(menu_items)
         sorting_hint = "tools",
         sub_item_table = {
             {
-                text = _("Character list"),
+                text = _("Object list"),
                 keep_menu_open = false,
                 callback = function()
                     self:showCharacterList()
@@ -2382,6 +2483,20 @@ function CharacterTracker:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Add location"),
+                keep_menu_open = false,
+                callback = function()
+                    self:showAddEntityDialog("location")
+                end,
+            },
+            {
+                text = _("Add faction"),
+                keep_menu_open = false,
+                callback = function()
+                    self:showAddEntityDialog("faction")
+                end,
+            },
+            {
                 text = _("Link to series"),
                 keep_menu_open = false,
                 callback = function()
@@ -2399,7 +2514,7 @@ end
 
 function CharacterTracker:confirmDeleteSeries(s, on_done)
     UIManager:show(ConfirmBox:new{
-        text = T(_("Delete series '%1'?\n\nThis will permanently remove the shared character file (%2 characters). Books currently linked to this series will lose access to its characters."), s.name, s.count),
+        text = T(_("Delete series '%1'?\n\nThis will permanently remove the shared object file (%2 objects). Books currently linked to this series will lose access to its objects."), s.name, s.count),
         ok_text = _("Delete"),
         ok_callback = function()
             os.remove(s.path)
@@ -2454,7 +2569,7 @@ function CharacterTracker:showSeriesOptions()
         },
     }
     self._series_dialog = ButtonDialog:new{
-        title = T(_("Series: %1\n%2 shared characters"), series, #self.characters),
+        title = T(_("Series: %1\n%2 shared objects"), series, #self.characters),
         buttons = buttons,
     }
     UIManager:show(self._series_dialog)
