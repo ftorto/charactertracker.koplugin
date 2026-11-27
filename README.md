@@ -18,7 +18,7 @@ Never forget who's who in a long novel — or across an entire series — again.
 ### Relationships
 - Link characters with predefined types: **father, mother, son, daughter, brother, sister, spouse, ally, enemy, friend, mentor, servant, master, lover**.
 - **Custom relationships** for anything else (squire, rival, betrothed, ...).
-- Detail view shows both **outgoing** (→) and **incoming** (←) relationships.
+- Relationship manager and detail view show both **outgoing** (→) and **incoming** (←) relationships.
 - Tap a relationship to jump to that character's detail view.
 - Invert a relationship to swap its two characters.
 - Deleting a character cleans up dangling relationships automatically.

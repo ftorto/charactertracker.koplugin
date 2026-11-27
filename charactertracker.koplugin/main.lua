@@ -415,6 +415,7 @@ function CharacterTracker:rebuildRelationshipIndex()
                     incoming[#incoming + 1] = {
                         source_id = source_id,
                         source = source_name,
+                        relationship_index = _j,
                         type = rel.type,
                     }
                 end
@@ -1275,6 +1276,24 @@ function CharacterTracker:showRelationshipManager(character, on_close)
                 text = display,
                 callback = function()
                     self:showRelationshipActionsDialog(character, i, handle.refresh)
+                end,
+            }
+        end
+
+        for _i, rel in ipairs(self:getIncomingRelationships(character)) do
+            local label = getRelationshipLabel(rel.type)
+            local source_name = self:getRelationshipSourceName(rel)
+            local display = "← " .. source_name .. " (" .. label .. ")"
+            if #display > 50 then display = display:sub(1, 47) .. "..." end
+            local source = self.character_by_id[rel.source_id]
+            local relationship_index = rel.relationship_index
+            items[#items + 1] = {
+                text = display,
+                callback = function()
+                    if source and source.relationships
+                        and source.relationships[relationship_index] then
+                        self:showRelationshipActionsDialog(source, relationship_index, handle.refresh)
+                    end
                 end,
             }
         end
