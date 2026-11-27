@@ -1314,7 +1314,7 @@ function CharacterTracker:showRelationshipActionsDialog(character, rel_index, on
         }
         buttons[#buttons + 1] = {
             {
-                text = _("Invert characters"),
+                text = _("Swap characters"),
                 callback = function()
                     UIManager:close(dialog)
                     self:invertRelationship(character, rel_index, on_done)
