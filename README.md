@@ -20,13 +20,8 @@ Never forget who's who in a long novel — or across an entire series — again.
 - **Custom relationships** for anything else (squire, rival, betrothed, ...).
 - Detail view shows both **outgoing** (→) and **incoming** (←) relationships.
 - Tap a relationship to jump to that character's detail view.
+- Invert a relationship to swap its two characters.
 - Deleting a character cleans up dangling relationships automatically.
-
-### In-text recognition
-- **Underline character names** in the page (toggle in the menu).
-  Names and aliases are indexed in the background using KOReader's `findAllText`.
-- **Tap any underlined name** to open that character's detail view instantly.
-- Re-indexes automatically when characters or aliases are added/edited.
 
 ### Highlight integration
 - Adds a **Character** button to the highlight popup.
@@ -73,14 +68,6 @@ Then restart KOReader.
 1. **Tools → Character Tracker → Character list**
 2. Tap a character to open the detail view.
 3. From there: rate, set role, manage notes, manage aliases, manage relationships, rename, or delete.
-
-### Underlining names in the text
-
-1. **Tools → Character Tracker → Underline names in text** (toggle).
-2. Tap any underlined name to open its detail view.
-
-> Indexing runs once when the setting changes or when you add/edit characters.
-> A dismissible progress dialog is shown.
 
 ### Linking a book to a series
 
