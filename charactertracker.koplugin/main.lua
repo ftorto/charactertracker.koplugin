@@ -36,6 +36,7 @@ local CharacterTracker = WidgetContainer:extend{
     is_doc_only = true,
     characters = nil,
     data_file = nil,
+    display_settings = nil,
     character_lookup = nil,
     character_by_id = nil,
     incoming_relationship_lookup = nil,
@@ -111,6 +112,13 @@ local function getRoleLabel(role_key)
     return ROLE_LABELS[role_key or ""] or _("Not set")
 end
 
+local DISPLAY_OPTIONS = {
+    { key = "rating", label = _("Rating") },
+    { key = "role", label = _("Role") },
+    { key = "notes", label = _("Notes") },
+    { key = "relationships", label = _("Relationships") },
+}
+
 --- Trim leading/trailing whitespace.
 local function trim(s)
     if not s then return "" end
@@ -172,6 +180,7 @@ function CharacterTracker:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
     self.characters = {}
+    self.display_settings = {}
     self.character_lookup = {}
     self.character_by_id = {}
     self.incoming_relationship_lookup = {}
@@ -198,6 +207,7 @@ function CharacterTracker:onDispatcherRegisterActions()
 end
 
 function CharacterTracker:onReaderReady()
+    self:loadDisplaySettings()
     self:loadData()
     -- Register our button in the highlight dialog
     if self.ui.highlight then
@@ -279,6 +289,63 @@ function CharacterTracker:setSeriesName(name)
     -- Invalidate cached path so it recalculates
     self.data_file = nil
     self._series_cache = nil
+end
+
+function CharacterTracker:loadDisplaySettings()
+    local saved = self.ui.doc_settings
+        and self.ui.doc_settings:readSetting("character_tracker_display_options")
+    self.display_settings = {}
+    for _i, option in ipairs(DISPLAY_OPTIONS) do
+        self.display_settings[option.key] = type(saved) ~= "table"
+            or saved[option.key] ~= false
+    end
+end
+
+function CharacterTracker:isDisplayOptionVisible(key)
+    return not self.display_settings or self.display_settings[key] ~= false
+end
+
+function CharacterTracker:saveDisplaySettings()
+    if not self.ui.doc_settings then
+        UIManager:show(InfoMessage:new{
+            text = _("Display settings require an open book."),
+        })
+        return false
+    end
+    self.ui.doc_settings:saveSetting("character_tracker_display_options", self.display_settings)
+    return true
+end
+
+function CharacterTracker:showDisplaySettings()
+    local handle
+    handle = self:showMenu(_("Display settings"), function()
+        local items = {}
+        for _i, option in ipairs(DISPLAY_OPTIONS) do
+            local key = option.key
+            local status = self:isDisplayOptionVisible(key) and _("Shown") or _("Hidden")
+            items[#items + 1] = {
+                text = T(_("%1: %2"), option.label, status),
+                callback = function()
+                    if not self.ui.doc_settings then
+                        self:saveDisplaySettings()
+                        return
+                    end
+                    self.display_settings[key] = not self:isDisplayOptionVisible(key)
+                    if not self:saveDisplaySettings() then return end
+                    self.character_list_cache = nil
+                    self._list_dirty = true
+                    handle.refresh()
+                end,
+            }
+        end
+        items[#items + 1] = {
+            text = _("Done"),
+            callback = function()
+                handle.close()
+            end,
+        }
+        return items
+    end)
 end
 
 function CharacterTracker:getDataFilePath()
@@ -1778,38 +1845,44 @@ function CharacterTracker:buildCharacterDetailText(character)
     local parts = {}
     local sep = "────────────────"
 
-    parts[#parts + 1] = "  " .. _("Rating") .. ":  " .. starsString(character.rating) .. "\n"
-    parts[#parts + 1] = "  " .. _("Role") .. ":    " .. getRoleLabel(character.role) .. "\n"
+    if self:isDisplayOptionVisible("rating") then
+        parts[#parts + 1] = "  " .. _("Rating") .. ":  " .. starsString(character.rating) .. "\n"
+    end
+    if self:isDisplayOptionVisible("role") then
+        parts[#parts + 1] = "  " .. _("Role") .. ":    " .. getRoleLabel(character.role) .. "\n"
+    end
 
     if character.aliases and #character.aliases > 0 then
         parts[#parts + 1] = "  " .. _("Aliases") .. ": " .. table.concat(character.aliases, ", ") .. "\n"
     end
 
-    local outgoing = character.relationships or {}
-    local incoming = self:getIncomingRelationships(character)
-
-    if #outgoing > 0 or #incoming > 0 then
-        parts[#parts + 1] = sep .. "\n"
-        parts[#parts + 1] = "  " .. _("Relationships") .. "\n"
-        for _i, rel in ipairs(outgoing) do
-            parts[#parts + 1] = "  → " .. self:getRelationshipTargetName(rel)
-                .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
-        end
-        for _i, rel in ipairs(incoming) do
-            parts[#parts + 1] = "  ← " .. self:getRelationshipSourceName(rel)
-                .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
+    if self:isDisplayOptionVisible("relationships") then
+        local outgoing = character.relationships or {}
+        local incoming = self:getIncomingRelationships(character)
+        if #outgoing > 0 or #incoming > 0 then
+            parts[#parts + 1] = sep .. "\n"
+            parts[#parts + 1] = "  " .. _("Relationships") .. "\n"
+            for _i, rel in ipairs(outgoing) do
+                parts[#parts + 1] = "  → " .. self:getRelationshipTargetName(rel)
+                    .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
+            end
+            for _i, rel in ipairs(incoming) do
+                parts[#parts + 1] = "  ← " .. self:getRelationshipSourceName(rel)
+                    .. " (" .. getRelationshipLabel(rel.type) .. ")\n"
+            end
         end
     end
 
-    -- Notes (general, not linked to pages)
-    if character.notes and #character.notes > 0 then
-        parts[#parts + 1] = sep .. "\n"
-        parts[#parts + 1] = "  " .. _("Notes") .. " (" .. #character.notes .. ")\n"
-        for _i, note in ipairs(character.notes) do
-            parts[#parts + 1] = "  ◆ " .. getNoteText(note) .. "\n\n"
+    if self:isDisplayOptionVisible("notes") then
+        if character.notes and #character.notes > 0 then
+            parts[#parts + 1] = sep .. "\n"
+            parts[#parts + 1] = "  " .. _("Notes") .. " (" .. #character.notes .. ")\n"
+            for _i, note in ipairs(character.notes) do
+                parts[#parts + 1] = "  ◆ " .. getNoteText(note) .. "\n\n"
+            end
+        else
+            parts[#parts + 1] = "\n  " .. _("No notes yet.") .. "\n"
         end
-    else
-        parts[#parts + 1] = "\n  " .. _("No notes yet.") .. "\n"
     end
 
     return table.concat(parts)
@@ -1817,7 +1890,83 @@ end
 
 function CharacterTracker:showCharacterDetail(character)
     local viewer
-    local function refresh()
+    local refresh
+    local buttons_table = {}
+    local display_buttons = {}
+    if self:isDisplayOptionVisible("rating") then
+        display_buttons[#display_buttons + 1] = {
+            text = "★ " .. _("Rate"),
+            callback = function()
+                self:showRatingDialog(character, refresh)
+            end,
+        }
+    end
+    if self:isDisplayOptionVisible("role") then
+        display_buttons[#display_buttons + 1] = {
+            text = _("Role"),
+            callback = function()
+                self:showRoleDialog(character, refresh)
+            end,
+        }
+    end
+    if self:isDisplayOptionVisible("notes") then
+        display_buttons[#display_buttons + 1] = {
+            text = _("Notes"),
+            callback = function()
+                self:showNotesManager(character, refresh)
+            end,
+        }
+    end
+    if #display_buttons > 0 then
+        buttons_table[#buttons_table + 1] = display_buttons
+    end
+
+    local character_buttons = {
+        {
+            text = _("Aliases"),
+            callback = function()
+                self:showAliasManager(character, refresh)
+            end,
+        },
+    }
+    if self:isDisplayOptionVisible("relationships") then
+        character_buttons[#character_buttons + 1] = {
+            text = _("Relations"),
+            callback = function()
+                self:showRelationshipManager(character, refresh)
+            end,
+        }
+    end
+    buttons_table[#buttons_table + 1] = character_buttons
+
+    buttons_table[#buttons_table + 1] = {
+        {
+            text = _("Rename"),
+            callback = function()
+                self:showRenameDialog(character, function()
+                    -- The title bar changes with the name: rebuild.
+                    UIManager:close(viewer)
+                    self:showCharacterDetail(character)
+                end)
+            end,
+        },
+        {
+            text = _("Delete"),
+            callback = function()
+                UIManager:close(viewer)
+                self:deleteCharacter(character)
+            end,
+        },
+        {
+            text = _("Close"),
+            id = "close",
+            callback = function()
+                UIManager:close(viewer)
+            end,
+        },
+    }
+
+    refresh = function()
         if not viewer then return end
         viewer.text = self:buildCharacterDetailText(character)
         viewer:reinit()
@@ -1828,68 +1977,7 @@ function CharacterTracker:showCharacterDetail(character)
         text = self:buildCharacterDetailText(character),
         width = math.floor(Device.screen:getWidth() * 0.9),
         height = math.floor(Device.screen:getHeight() * 0.85),
-        buttons_table = {
-            {
-                {
-                    text = "★ " .. _("Rate"),
-                    callback = function()
-                        self:showRatingDialog(character, refresh)
-                    end,
-                },
-                {
-                    text = _("Role"),
-                    callback = function()
-                        self:showRoleDialog(character, refresh)
-                    end,
-                },
-                {
-                    text = _("Notes"),
-                    callback = function()
-                        self:showNotesManager(character, refresh)
-                    end,
-                },
-            },
-            {
-                {
-                    text = _("Aliases"),
-                    callback = function()
-                        self:showAliasManager(character, refresh)
-                    end,
-                },
-                {
-                    text = _("Relations"),
-                    callback = function()
-                        self:showRelationshipManager(character, refresh)
-                    end,
-                },
-            },
-            {
-                {
-                    text = _("Rename"),
-                    callback = function()
-                        self:showRenameDialog(character, function()
-                            -- The title bar changes with the name: rebuild.
-                            UIManager:close(viewer)
-                            self:showCharacterDetail(character)
-                        end)
-                    end,
-                },
-                {
-                    text = _("Delete"),
-                    callback = function()
-                        UIManager:close(viewer)
-                        self:deleteCharacter(character)
-                    end,
-                },
-                {
-                    text = _("Close"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(viewer)
-                    end,
-                },
-            },
-        },
+        buttons_table = buttons_table,
     }
     UIManager:show(viewer)
 end
@@ -1964,12 +2052,12 @@ function CharacterTracker:showCharacterList()
             local badges = {}
             -- Stars
             local rating = char.rating or 0
-            if rating > 0 then
+            if self:isDisplayOptionVisible("rating") and rating > 0 then
                 badges[#badges + 1] = ("★"):rep(rating)
             end
             -- Role
             local role = char.role or ""
-            if role ~= "" then
+            if self:isDisplayOptionVisible("role") and role ~= "" then
                 badges[#badges + 1] = getRoleLabel(role)
             end
             -- Aliases
@@ -1977,13 +2065,15 @@ function CharacterTracker:showCharacterList()
                 badges[#badges + 1] = T(_("%1 aliases"), #char.aliases)
             end
             -- Relationships
-            local rel_count = (char.relationships and #char.relationships or 0)
-                + #self:getIncomingRelationships(char)
-            if rel_count > 0 then
-                badges[#badges + 1] = T(_("%1 relations"), rel_count)
+            if self:isDisplayOptionVisible("relationships") then
+                local rel_count = (char.relationships and #char.relationships or 0)
+                    + #self:getIncomingRelationships(char)
+                if rel_count > 0 then
+                    badges[#badges + 1] = T(_("%1 relations"), rel_count)
+                end
             end
             -- Counts
-            if char.notes and #char.notes > 0 then
+            if self:isDisplayOptionVisible("notes") and char.notes and #char.notes > 0 then
                 badges[#badges + 1] = T(_("%1 notes"), #char.notes)
             end
             local info = ""
@@ -2275,6 +2365,13 @@ function CharacterTracker:addToMainMenu(menu_items)
                 keep_menu_open = false,
                 callback = function()
                     self:showCharacterList()
+                end,
+            },
+            {
+                text = _("Display settings"),
+                keep_menu_open = false,
+                callback = function()
+                    self:showDisplaySettings()
                 end,
             },
             {

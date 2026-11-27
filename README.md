@@ -13,6 +13,7 @@ Never forget who's who in a long novel — or across an entire series — again.
 - **Notes** — add evolving observations as the story progresses; edit or delete any time.
 - **Rating** — rate characters from ★ to ★★★★★.
 - **Role** — tag as Main, Secondary, Tertiary, Mentioned, Antagonist, or Narrator.
+- **Per-book display settings** — hide ratings, roles, notes, or relationships without changing their data.
 - **Rename** — safely rename a character (relationships pointing to it are updated automatically).
 
 ### Relationships
